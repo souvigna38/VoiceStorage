@@ -12,14 +12,12 @@ import { PrismaPg } from "@prisma/adapter-pg";
 // Label Unprocessed — Backfill AI labels for existing item_images
 // =============================================================================
 // Finds all item_images with ai_processed = false and runs them through
-// Ollama LLaVA for content identification. Also generates CLIP embeddings
+// OpenRouter for content identification. Also generates CLIP embeddings
 // for any images missing them.
 //
 // Usage:  npm run label
 // =============================================================================
 
-const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://localhost:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llava";
 const CLIP_SERVICE_URL = process.env.CLIP_SERVICE_URL || "http://localhost:8100";
 
 const DATABASE_URL =
@@ -32,19 +30,11 @@ function createPrisma(): PrismaClient {
   return new PrismaClient({ adapter });
 }
 
-import { sanitizeAiLabel, type AiLabel } from "../lib/sanitize";
-
-async function checkOllamaHealth(): Promise<boolean> {
-  try {
-    const resp = await fetch(`${OLLAMA_HOST}/api/tags`);
-    if (!resp.ok) return false;
-    const data = await resp.json();
-    const models = data.models?.map((m: { name: string }) => m.name) || [];
-    return models.some((m: string) => m.startsWith(OLLAMA_MODEL));
-  } catch {
-    return false;
-  }
-}
+import type { AiLabel } from "../lib/sanitize";
+import {
+  analyzeInventoryImage,
+  isOpenRouterConfigured,
+} from "../lib/ai/openrouter";
 
 async function checkClipHealth(): Promise<boolean> {
   try {
@@ -63,17 +53,8 @@ function internalizeUrl(imageUrl: string): string {
   return imageUrl.replace(/https?:\/\/[^/]+:9000\//, `http://${MINIO_ENDPOINT}:${MINIO_PORT}/`);
 }
 
-/** Resize a buffer to max 768px on longest side using sharp, output JPEG q40. */
-async function resizeForLLaVA(inputBuf: Buffer): Promise<Buffer> {
-  const sharp = (await import("sharp")).default;
-  return sharp(inputBuf)
-    .resize(768, 768, { fit: "inside", withoutEnlargement: true })
-    .jpeg({ quality: 40 })
-    .toBuffer();
-}
-
-/** Fetch image from URL, convert HEIC→JPEG if needed, resize, and return base64. */
-async function fetchImageAsBase64(imageUrl: string): Promise<string> {
+/** Fetch image from URL and convert HEIC→JPEG if needed. */
+async function fetchImageBuffer(imageUrl: string): Promise<Buffer> {
   const url = internalizeUrl(imageUrl);
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Failed to fetch image: ${resp.status}`);
@@ -103,49 +84,15 @@ async function fetchImageAsBase64(imageUrl: string): Promise<string> {
     jpegBuf = buffer;
   }
 
-  // Resize to max 768px for LLaVA (prevents OOM)
-  const resized = await resizeForLLaVA(jpegBuf);
-  console.log(`    [Resized: ${(jpegBuf.length / 1024).toFixed(0)}KB → ${(resized.length / 1024).toFixed(0)}KB]`);
-  return resized.toString("base64");
+  return jpegBuf;
 }
 
-/** Analyze an image URL with LLaVA. */
-async function analyzeWithLLaVA(imageUrl: string): Promise<AiLabel | null> {
+/** Analyze an image URL through OpenRouter. */
+async function analyzeWithOpenRouter(imageUrl: string): Promise<AiLabel | null> {
   try {
-    const base64Image = await fetchImageAsBase64(imageUrl);
-
-    const prompt = `Analyze this image for a product inventory system.
-You MUST respond with ONLY valid JSON, no other text. Use this exact format:
-{
-  "main_color": "the dominant color of the object",
-  "object_type": "what kind of object this is (e.g. server, laptop, switch, cable, monitor, phone, tool, appliance)",
-  "detected_text": "any visible text, labels, serial numbers, or branding on the object",
-  "short_description": "a brief 1-2 sentence description suitable for an inventory catalog"
-}`;
-
-    const resp = await fetch(`${OLLAMA_HOST}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        messages: [{ role: "user", content: prompt, images: [base64Image] }],
-        stream: false,
-        options: { temperature: 0.1, num_predict: 500, num_ctx: 2048 },
-      }),
-    });
-
-    if (!resp.ok) {
-      console.warn(`    Ollama returned HTTP ${resp.status}: ${await resp.text().catch(() => "")}`);
-      return null;
-    }
-
-    const data = await resp.json();
-    const content: string = data.message?.content || "{}";
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
-
-    const raw = JSON.parse(jsonMatch[0]) as AiLabel;
-    return sanitizeAiLabel(raw);
+    const image = await fetchImageBuffer(imageUrl);
+    const result = await analyzeInventoryImage(image);
+    return result.label;
   } catch (error) {
     console.warn(`    Error: ${error instanceof Error ? error.message : error}`);
     return null;
@@ -174,18 +121,23 @@ async function main() {
   console.log("═══════════════════════════════════════════════════════════════");
   console.log("  InvStorage — Label Unprocessed Images");
   console.log("═══════════════════════════════════════════════════════════════");
-  console.log(`  Ollama:   ${OLLAMA_HOST} (${OLLAMA_MODEL})`);
+  console.log(
+    `  Vision AI: OpenRouter (${process.env.OPENROUTER_VISION_MODEL || "not configured"})`
+  );
   console.log(`  CLIP:     ${CLIP_SERVICE_URL}`);
   console.log(`  Database: ${DATABASE_URL.replace(/:[^:@]+@/, ":***@")}`);
   console.log("═══════════════════════════════════════════════════════════════");
   console.log("");
 
-  const ollamaOk = await checkOllamaHealth();
-  if (!ollamaOk) {
-    console.error(`[Label] Ollama not available at ${OLLAMA_HOST} or model "${OLLAMA_MODEL}" missing.`);
+  if (!isOpenRouterConfigured()) {
+    console.error(
+      "[Label] Set OPENROUTER_API_KEY and OPENROUTER_VISION_MODEL before labeling."
+    );
     process.exit(1);
   }
-  console.log(`[Label] Ollama ready (${OLLAMA_MODEL})`);
+  console.log(
+    `[Label] OpenRouter configured (${process.env.OPENROUTER_VISION_MODEL})`
+  );
 
   const clipOk = await checkClipHealth();
   if (clipOk) console.log(`[Label] CLIP service ready`);
@@ -227,8 +179,8 @@ async function main() {
     }
 
     // AI Label
-    console.log(`    Analyzing with LLaVA...`);
-    const label = await analyzeWithLLaVA(img.image_url);
+    console.log(`    Analyzing with OpenRouter...`);
+    const label = await analyzeWithOpenRouter(img.image_url);
     if (label) {
       // Update item_image
       await prisma.item_images.update({
@@ -262,10 +214,12 @@ async function main() {
       }
 
       labeled++;
-      console.log(`    Label: ${label.object_type} | ${label.main_color}`);
+      console.log(
+        `    Label: ${label.object_type} | ${label.main_color} | confidence=${label.confidence_score?.toFixed(2)}`
+      );
       console.log(`    Desc:  "${label.short_description?.slice(0, 80)}"`);
     } else {
-      console.warn(`    LLaVA analysis failed`);
+      console.warn(`    OpenRouter analysis failed`);
     }
 
     // CLIP embedding backfill (check via raw SQL since Prisma doesn't expose the column)

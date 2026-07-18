@@ -2,17 +2,19 @@ import { Job } from "bullmq";
 import { PrismaClient } from "../generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
-import { sanitizeAiLabel } from "../lib/sanitize";
+import type { AiLabel } from "../lib/sanitize";
+import {
+  analyzeInventoryImage,
+  isOpenRouterConfigured,
+} from "../lib/ai/openrouter";
 
 // =============================================================================
 // AI Image Processor — The "Brain" of the Worker
 // =============================================================================
-// Fetches unprocessed images from the DB, sends them to Ollama (LLaVA),
+// Fetches unprocessed images from the DB, sends them to OpenRouter,
 // and stores the AI analysis back in the database.
 // =============================================================================
 
-const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://localhost:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llava";
 const CLIP_SERVICE_URL = process.env.CLIP_SERVICE_URL || "http://localhost:8100";
 const BATCH_SIZE = 50;
 
@@ -32,116 +34,28 @@ interface ProcessResult {
   remaining: number;
 }
 
-interface OllamaAnalysis {
-  main_color: string;
-  object_type: string;
-  detected_text: string;
-  short_description: string;
+// ---------------------------------------------------------------------------
+// Fetch an image and analyze it through OpenRouter
+// ---------------------------------------------------------------------------
+function internalizeImageUrl(imageUrl: string): string {
+  const endpoint = process.env.MINIO_ENDPOINT || "storage";
+  const port = process.env.MINIO_PORT || "9000";
+  return imageUrl.replace(
+    /https?:\/\/[^/]+:\d+\//,
+    `http://${endpoint}:${port}/`
+  );
 }
 
-// ---------------------------------------------------------------------------
-// Call Ollama LLaVA with an image URL
-// ---------------------------------------------------------------------------
-async function analyzeImageWithOllama(imageUrl: string): Promise<OllamaAnalysis> {
-  // First, fetch the image and convert to base64
-  let base64Image: string;
-
-  try {
-    const response = await fetch(imageUrl);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch image: ${response.status} ${response.statusText}`);
-    }
-    const buffer = await response.arrayBuffer();
-    base64Image = Buffer.from(buffer).toString("base64");
-  } catch (error) {
-    console.error(`  ⚠ Could not fetch image from ${imageUrl}:`, error);
-    throw error;
+async function analyzeImageWithOpenRouter(imageUrl: string): Promise<AiLabel> {
+  const response = await fetch(internalizeImageUrl(imageUrl));
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch image: ${response.status} ${response.statusText}`
+    );
   }
-
-  // Call Ollama's chat API with the image
-  const prompt = `Analyze this image for a product inventory system. 
-You MUST respond with ONLY valid JSON, no other text. Use this exact format:
-{
-  "main_color": "the dominant color of the object",
-  "object_type": "what kind of object this is (e.g. server, laptop, switch, cable, monitor)",
-  "detected_text": "any visible text, labels, serial numbers, or branding on the object",
-  "short_description": "a brief 1-2 sentence description suitable for an inventory catalog"
-}`;
-
-  const ollamaResponse = await fetch(`${OLLAMA_HOST}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: OLLAMA_MODEL,
-      messages: [
-        {
-          role: "user",
-          content: prompt,
-          images: [base64Image],
-        },
-      ],
-      stream: false,
-      options: {
-        temperature: 0.1,      // Low temp for consistent JSON output
-        num_predict: 500,      // Limit response length
-      },
-    }),
-  });
-
-  if (!ollamaResponse.ok) {
-    const errorText = await ollamaResponse.text();
-    throw new Error(`Ollama API error (${ollamaResponse.status}): ${errorText}`);
-  }
-
-  const data = await ollamaResponse.json();
-  const content: string = data.message?.content || "{}";
-
-  // Extract JSON from the response (LLaVA sometimes wraps in markdown)
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    console.warn(`  ⚠ Could not extract JSON from Ollama response: ${content.slice(0, 200)}`);
-    return {
-      main_color: "unknown",
-      object_type: "unknown",
-      detected_text: "",
-      short_description: content.slice(0, 200),
-    };
-  }
-
-  try {
-    const raw = JSON.parse(jsonMatch[0]) as OllamaAnalysis;
-    return sanitizeAiLabel(raw);
-  } catch {
-    console.warn(`  ⚠ Invalid JSON from Ollama: ${jsonMatch[0].slice(0, 200)}`);
-    return {
-      main_color: "unknown",
-      object_type: "unknown",
-      detected_text: "",
-      short_description: content.slice(0, 200),
-    };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Check if Ollama is reachable and model is available
-// ---------------------------------------------------------------------------
-async function checkOllamaHealth(): Promise<boolean> {
-  try {
-    const resp = await fetch(`${OLLAMA_HOST}/api/tags`);
-    if (!resp.ok) return false;
-    const data = await resp.json();
-    const models = data.models?.map((m: { name: string }) => m.name) || [];
-    const hasModel = models.some((m: string) => m.startsWith(OLLAMA_MODEL));
-    if (!hasModel) {
-      console.warn(`[Processor] ⚠ Model "${OLLAMA_MODEL}" not found. Available: ${models.join(", ")}`);
-      console.warn(`[Processor]   Run: ollama pull ${OLLAMA_MODEL}`);
-      return false;
-    }
-    return true;
-  } catch {
-    console.error(`[Processor] ❌ Cannot reach Ollama at ${OLLAMA_HOST}`);
-    return false;
-  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const result = await analyzeInventoryImage(buffer);
+  return result.label;
 }
 
 // ---------------------------------------------------------------------------
@@ -215,12 +129,15 @@ export async function processUnscannedImages(job: Job): Promise<ProcessResult> {
 
   try {
     // Health check
-    const ollamaOk = await checkOllamaHealth();
-    if (!ollamaOk) {
-      console.error("[Processor] Ollama not available — aborting batch");
-      throw new Error(`Ollama not available at ${OLLAMA_HOST} or model "${OLLAMA_MODEL}" missing`);
+    if (!isOpenRouterConfigured()) {
+      console.error("[Processor] OpenRouter is not configured — aborting batch");
+      throw new Error(
+        "Set OPENROUTER_API_KEY and OPENROUTER_VISION_MODEL for the AI worker"
+      );
     }
-    console.log(`[Processor] ✓ Ollama is ready (model: ${OLLAMA_MODEL})`);
+    console.log(
+      `[Processor] OpenRouter configured (model: ${process.env.OPENROUTER_VISION_MODEL})`
+    );
 
     // Check CLIP service availability (non-blocking — embeddings are optional)
     const clipAvailable = await checkClipHealth();
@@ -327,8 +244,8 @@ export async function processUnscannedImages(job: Job): Promise<ProcessResult> {
           continue;
         }
 
-        // Call Ollama
-        const analysis = await analyzeImageWithOllama(img.image_url);
+        // Call the external vision provider
+        const analysis = await analyzeImageWithOpenRouter(img.image_url);
 
         // Update item_image with AI results
         await prisma.item_images.update({
@@ -397,7 +314,7 @@ export async function processUnscannedImages(job: Job): Promise<ProcessResult> {
       // Update progress
       await job.updateProgress(progress);
 
-      // Small delay to avoid overwhelming Ollama
+      // Small delay to avoid request bursts and simplify cost control
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
 

@@ -4,6 +4,9 @@ A fully self-contained personal inventory management system packaged as a Docker
 
 For day-to-day operation, see the **[InvTrack / InvStorage User Guide](docs/USER_GUIDE.md)**.
 
+For the lean VoiceStorage prototype on one Intel MacBook using external AI, see
+**[MacBook + OpenRouter Test Guide](docs/MACBOOK_OPENROUTER.md)**.
+
 ## Requirements
 
 - **Docker Engine** with the **Compose V2 plugin** (`docker compose`, not only legacy `docker-compose`)

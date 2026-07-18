@@ -2,12 +2,13 @@
 // Input sanitization — prevents stored XSS and prompt injection output abuse
 // =============================================================================
 
-/** Shape of the JSON that Ollama/LLaVA returns after image analysis. */
+/** Normalized shape returned by the configured inventory vision provider. */
 export interface AiLabel {
   main_color: string;
   object_type: string;
   detected_text: string;
   short_description: string;
+  confidence_score?: number;
 }
 
 /**
@@ -29,11 +30,15 @@ function stripHtml(s: string | undefined | null, maxLen: number): string {
  * Strips HTML, enforces length limits, and ensures string types.
  */
 export function sanitizeAiLabel(raw: AiLabel): AiLabel {
+  const confidence = Number(raw.confidence_score);
   return {
     main_color: stripHtml(raw.main_color, 50) || "unknown",
     object_type: stripHtml(raw.object_type, 100) || "unknown",
     detected_text: stripHtml(raw.detected_text, 500) || "",
     short_description: stripHtml(raw.short_description, 500) || "",
+    confidence_score: Number.isFinite(confidence)
+      ? Math.min(1, Math.max(0, confidence))
+      : 0,
   };
 }
 

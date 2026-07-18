@@ -1,0 +1,221 @@
+name: voicestorage-macbook
+
+# Lean single-Mac test stack.
+# Run with:
+#   cp .env.macbook.example .env.macbook
+#   docker compose --env-file .env.macbook -f docker-compose.macbook.yml up -d --build
+
+services:
+  db:
+    image: pgvector/pgvector:pg15
+    container_name: voicestorage_db
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${VOICESTORAGE_DB_PORT:-5542}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: inventory
+    volumes:
+      - voicestorage_pgdata:/var/lib/postgresql/data
+      - ./backend/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d inventory"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  redis:
+    image: redis:alpine
+    container_name: voicestorage_redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${VOICESTORAGE_REDIS_PORT:-6479}:6379"
+    volumes:
+      - voicestorage_redisdata:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  storage:
+    image: minio/minio:latest
+    container_name: voicestorage_storage
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${VOICESTORAGE_MINIO_PORT:-9100}:9000"
+      - "127.0.0.1:${VOICESTORAGE_MINIO_CONSOLE_PORT:-9101}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-voicestorage}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-now}
+    volumes:
+      - voicestorage_miniodata:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  storage-init:
+    image: minio/mc:latest
+    container_name: voicestorage_storage_init
+    restart: "no"
+    depends_on:
+      storage:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        mc alias set local http://storage:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" &&
+        mc mb --ignore-existing local/inventory &&
+        mc anonymous set download local/inventory
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-voicestorage}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-now}
+
+  clip-service:
+    build:
+      context: ./backend/clip-service
+      dockerfile: Dockerfile
+    container_name: voicestorage_clip
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${VOICESTORAGE_CLIP_PORT:-8200}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 600s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  vault-db:
+    image: pgvector/pgvector:pg15
+    container_name: voicestorage_vault
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${VOICESTORAGE_VAULT_PORT:-5546}:5432"
+    environment:
+      POSTGRES_USER: ${VAULT_USER:-vault}
+      POSTGRES_PASSWORD: ${VAULT_PASSWORD:-change-vault-password}
+      POSTGRES_DB: vault_spm1
+    volumes:
+      - voicestorage_vaultdata:/var/lib/postgresql/data
+      - ./backend/vault-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d vault_spm1"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_MINIO_ENDPOINT: "http://localhost:${VOICESTORAGE_MINIO_PORT:-9100}"
+        NEXT_PUBLIC_MINIO_BUCKET: inventory
+        NEXT_PUBLIC_HOST_IP: localhost
+    container_name: voicestorage_frontend
+    restart: unless-stopped
+    ports:
+      - "${VOICESTORAGE_APP_PORT:-3100}:3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-change-me}@db:5432/inventory?schema=public
+      REDIS_URL: redis://redis:6379
+      CLIP_SERVICE_URL: http://clip-service:8000
+      MINIO_ENDPOINT: storage
+      MINIO_PORT: "9000"
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-voicestorage}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-change-me-now}
+      MINIO_BUCKET: inventory
+      MINIO_PUBLIC_HOST: localhost
+      MINIO_PUBLIC_PORT: ${VOICESTORAGE_MINIO_PORT:-9100}
+      PHOTO_INBOX: /data/photo-inbox
+      VAULT_DATABASE_URL: postgresql://${VAULT_USER:-vault}:${VAULT_PASSWORD:-change-vault-password}@vault-db:5432/vault_spm1
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_VISION_MODEL: ${OPENROUTER_VISION_MODEL:-google/gemini-2.5-flash}
+      OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
+      OPENROUTER_SITE_URL: http://localhost:${VOICESTORAGE_APP_PORT:-3100}
+      OPENROUTER_APP_NAME: VoiceStorage
+    volumes:
+      - ./photo-inbox:/data/photo-inbox
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
+      vault-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  ai-worker:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.worker
+    container_name: voicestorage_ai_worker
+    restart: unless-stopped
+    command: npm run worker
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-change-me}@db:5432/inventory?schema=public
+      REDIS_URL: redis://redis:6379
+      CLIP_SERVICE_URL: http://clip-service:8000
+      MINIO_ENDPOINT: storage
+      MINIO_PORT: "9000"
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_VISION_MODEL: ${OPENROUTER_VISION_MODEL:-google/gemini-2.5-flash}
+      OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
+      OPENROUTER_SITE_URL: http://localhost:${VOICESTORAGE_APP_PORT:-3100}
+      OPENROUTER_APP_NAME: VoiceStorage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  vault-cron:
+    image: alpine:3.19
+    container_name: voicestorage_vault_cron
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl > /dev/null 2>&1
+        echo "0 0 * * * curl -s -X POST http://frontend:3000/api/vault/snapshot > /proc/1/fd/1 2>&1" > /etc/crontabs/root
+        crond -f -l 2
+    depends_on:
+      frontend:
+        condition: service_healthy
+      vault-db:
+        condition: service_healthy
+
+volumes:
+  voicestorage_pgdata:
+  voicestorage_redisdata:
+  voicestorage_miniodata:
+  voicestorage_vaultdata:

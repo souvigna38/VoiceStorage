@@ -6,8 +6,10 @@
 .env
 .env.local
 .env.production
+.env.macbook
 # Keep .env.example (template for new installs — no real secrets)
 !.env.example
+!.env.macbook.example
 
 # ── Node / Next.js ───────────────────────────────────────────────────────────
 node_modules/

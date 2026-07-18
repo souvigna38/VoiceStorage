@@ -9,7 +9,7 @@ import { scheduleNightlyScan } from "./scheduler";
 // =============================================================================
 // This is a standalone Node.js process (NOT part of Next.js).
 // It listens for jobs on the "nightly-ai-scan" queue and processes images
-// through Ollama's LLaVA model.
+// through the configured external vision provider.
 //
 // Run:  npm run worker
 // =============================================================================
@@ -23,7 +23,9 @@ async function main() {
   console.log("═══════════════════════════════════════════════════════════");
   console.log(`  Queue:    ${QUEUE_NAME}`);
   console.log(`  Redis:    ${process.env.REDIS_URL || "redis://localhost:6379"}`);
-  console.log(`  Ollama:   ${process.env.OLLAMA_HOST || "http://localhost:11434"}`);
+  console.log(
+    `  Vision:   OpenRouter (${process.env.OPENROUTER_VISION_MODEL || "not configured"})`
+  );
   console.log(`  Database: ${process.env.DATABASE_URL?.replace(/:[^:@]+@/, ":***@") || "not set"}`);
   console.log("═══════════════════════════════════════════════════════════");
   console.log("");

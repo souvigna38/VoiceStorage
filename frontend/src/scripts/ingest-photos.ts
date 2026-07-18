@@ -22,7 +22,7 @@ import { groupPhotos, type PhotoGroup } from "./group-photos";
 //      a. Upload selected photos to MinIO (HEIC→JPEG conversion)
 //      b. Create 1 inventory item, attach 1–2 item_images
 //      c. Store CLIP embedding from the grouping step
-//      d. AI-label with LLaVA (primary photo only)
+//      d. AI-label through OpenRouter (primary photo only)
 //   4. Move ALL photos (selected + extras) to processed/
 //
 // Usage:
@@ -40,8 +40,6 @@ const PROCESSED_DIR = path.join(PHOTO_INBOX, "processed");
 
 const CLIP_SERVICE_URL =
   process.env.CLIP_SERVICE_URL || "http://localhost:8100";
-const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://localhost:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llava";
 
 const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || "localhost";
 const MINIO_PORT = parseInt(process.env.MINIO_PORT || "9000", 10);
@@ -287,62 +285,26 @@ async function saveEmbedding(
 }
 
 // ---------------------------------------------------------------------------
-// AI Labeling — Ollama LLaVA
+// AI Labeling — OpenRouter multimodal API
 // ---------------------------------------------------------------------------
-import { sanitizeAiLabel, type AiLabel } from "../lib/sanitize";
+import type { AiLabel } from "../lib/sanitize";
+import {
+  analyzeInventoryImage,
+  isOpenRouterConfigured,
+} from "../lib/ai/openrouter";
 
-async function checkOllamaHealth(): Promise<boolean> {
-  try {
-    const resp = await fetch(`${OLLAMA_HOST}/api/tags`);
-    if (!resp.ok) return false;
-    const data = await resp.json();
-    const models = data.models?.map((m: { name: string }) => m.name) || [];
-    return models.some((m: string) => m.startsWith(OLLAMA_MODEL));
-  } catch {
-    return false;
-  }
-}
-
-async function analyzeWithLLaVA(filePath: string): Promise<AiLabel | null> {
+async function analyzeWithOpenRouter(filePath: string): Promise<AiLabel | null> {
   const { jpegPath, needsCleanup } = convertToJpegIfNeeded(filePath);
   try {
     const imageBuffer = fs.readFileSync(jpegPath);
-    const base64Image = imageBuffer.toString("base64");
-
-    const prompt = `Analyze this image for a product inventory system.
-You MUST respond with ONLY valid JSON, no other text. Use this exact format:
-{
-  "main_color": "the dominant color of the object",
-  "object_type": "what kind of object this is (e.g. server, laptop, switch, cable, monitor, phone, tool, appliance)",
-  "detected_text": "any visible text, labels, serial numbers, or branding on the object",
-  "short_description": "a brief 1-2 sentence description suitable for an inventory catalog"
-}`;
-
-    const resp = await fetch(`${OLLAMA_HOST}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        messages: [{ role: "user", content: prompt, images: [base64Image] }],
-        stream: false,
-        options: { temperature: 0.1, num_predict: 500, num_ctx: 2048 },
-      }),
-    });
-
-    if (!resp.ok) return null;
-
-    const data = await resp.json();
-    const content: string = data.message?.content || "{}";
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
-
-    try {
-      const raw = JSON.parse(jsonMatch[0]) as AiLabel;
-      return sanitizeAiLabel(raw);
-    } catch {
-      return null;
-    }
-  } catch {
+    const result = await analyzeInventoryImage(imageBuffer);
+    return result.label;
+  } catch (error) {
+    console.warn(
+      `    OpenRouter analysis failed: ${
+        error instanceof Error ? error.message : error
+      }`
+    );
     return null;
   } finally {
     if (needsCleanup && fs.existsSync(jpegPath)) fs.unlinkSync(jpegPath);
@@ -425,7 +387,11 @@ async function main() {
   console.log(`  Inbox:     ${PHOTO_INBOX}`);
   console.log(`  MinIO:     ${MINIO_ENDPOINT}:${MINIO_PORT}/${MINIO_BUCKET}`);
   console.log(`  CLIP:      ${CLIP_SERVICE_URL}`);
-  console.log(`  Ollama:    ${OLLAMA_HOST} (${OLLAMA_MODEL})`);
+  console.log(
+    `  Vision AI: OpenRouter (${
+      process.env.OPENROUTER_VISION_MODEL || "not configured"
+    })`
+  );
   console.log(`  Threshold: ${GROUP_THRESHOLD} (cosine similarity for grouping)`);
   console.log(`  Database:  ${DATABASE_URL.replace(/:[^:@]+@/, ":***@")}`);
   if (dryRun) console.log(`  Mode:      DRY RUN (no changes)`);
@@ -487,12 +453,15 @@ async function main() {
   const prisma = createPrisma();
   const minio = createMinioClient();
 
-  const ollamaAvailable = await checkOllamaHealth();
-  if (ollamaAvailable) {
-    console.log(`[Ingest] Ollama ready (model: ${OLLAMA_MODEL}) — AI labeling enabled`);
+  const visionAvailable = isOpenRouterConfigured();
+  if (visionAvailable) {
+    console.log(
+      `[Ingest] OpenRouter configured (model: ${process.env.OPENROUTER_VISION_MODEL}) — AI labeling enabled`
+    );
   } else {
-    console.warn(`[Ingest] Ollama not available — AI labels skipped`);
-    console.warn(`[Ingest] Start with: ollama serve && ollama pull ${OLLAMA_MODEL}\n`);
+    console.warn(
+      `[Ingest] OpenRouter not configured — set OPENROUTER_API_KEY and OPENROUTER_VISION_MODEL to enable AI labels\n`
+    );
   }
 
   try {
@@ -612,15 +581,15 @@ async function main() {
         }
       }
 
-      // E. AI label with LLaVA (primary photo only — saves time)
-      if (ollamaAvailable) {
-        console.log(`    Analyzing with LLaVA...`);
-        const aiLabel = await analyzeWithLLaVA(primaryFile);
+      // E. AI label through OpenRouter (primary photo only — controls cost)
+      if (visionAvailable) {
+        console.log(`    Analyzing with OpenRouter...`);
+        const aiLabel = await analyzeWithOpenRouter(primaryFile);
         if (aiLabel) {
           await saveAiLabels(prisma, item.id, imageRecords[0].id, aiLabel);
           labeled++;
           console.log(
-            `    Label: ${aiLabel.object_type} | ${aiLabel.main_color} | "${aiLabel.short_description?.slice(0, 70)}"`
+            `    Label: ${aiLabel.object_type} | ${aiLabel.main_color} | confidence=${aiLabel.confidence_score?.toFixed(2)} | "${aiLabel.short_description?.slice(0, 70)}"`
           );
         } else {
           console.warn(`    AI labeling failed (will retry via nightly worker)`);
