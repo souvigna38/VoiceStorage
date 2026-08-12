@@ -40,6 +40,16 @@ ALTER TABLE item_images ADD COLUMN IF NOT EXISTS ai_tags JSONB DEFAULT '[]';
 ALTER TABLE item_images ADD COLUMN IF NOT EXISTS ai_processed_at TIMESTAMPTZ;
 ALTER TABLE item_images ADD COLUMN IF NOT EXISTS ai_corrected BOOLEAN DEFAULT FALSE;
 
+-- Items table: AI research enrichment columns
+ALTER TABLE items ADD COLUMN IF NOT EXISTS ai_research_summary TEXT;
+ALTER TABLE items ADD COLUMN IF NOT EXISTS ai_research_price_low DECIMAL(12,2);
+ALTER TABLE items ADD COLUMN IF NOT EXISTS ai_research_price_high DECIMAL(12,2);
+ALTER TABLE items ADD COLUMN IF NOT EXISTS ai_research_price_currency VARCHAR(10) DEFAULT 'USD';
+ALTER TABLE items ADD COLUMN IF NOT EXISTS ai_research_sources JSONB DEFAULT '[]';
+ALTER TABLE items ADD COLUMN IF NOT EXISTS ai_research_key_specs JSONB DEFAULT '{}';
+ALTER TABLE items ADD COLUMN IF NOT EXISTS ai_research_last_checked TIMESTAMPTZ;
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_item_images_ai_unprocessed ON item_images(ai_processed);
 CREATE INDEX IF NOT EXISTS idx_items_deleted_at ON items(deleted_at);
+CREATE INDEX IF NOT EXISTS idx_items_research_unchecked ON items(ai_research_last_checked) WHERE deleted_at IS NULL AND ai_research_last_checked IS NULL;

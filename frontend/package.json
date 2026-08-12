@@ -14,7 +14,8 @@
     "group": "tsx src/scripts/group-photos.ts",
     "group:json": "tsx src/scripts/group-photos.ts --json",
     "label": "tsx src/scripts/label-unprocessed.ts",
-    "msrp": "tsx src/scripts/msrp-lookup.ts"
+    "msrp": "tsx src/scripts/msrp-lookup.ts",
+    "research": "tsx src/scripts/item-research.ts"
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",

@@ -6,6 +6,7 @@ import type {
   ProductDetail,
   Location,
   Category,
+  ResearchSource,
 } from "@/lib/types";
 
 // =============================================================================
@@ -160,6 +161,18 @@ export async function getProductById(id: number): Promise<ProductDetail | null> 
     msrp_last_checked: item.msrp_last_checked?.toISOString() ?? null,
     sold_date: item.sold_date?.toISOString() ?? null,
     listing_url: item.listing_url,
+    ai_research_summary: item.ai_research_summary ?? null,
+    ai_research_price_low: item.ai_research_price_low ? Number(item.ai_research_price_low) : null,
+    ai_research_price_high: item.ai_research_price_high ? Number(item.ai_research_price_high) : null,
+    ai_research_price_currency: item.ai_research_price_currency ?? "USD",
+    ai_research_sources: Array.isArray(item.ai_research_sources)
+      ? (item.ai_research_sources as unknown as ResearchSource[])
+      : [],
+    ai_research_key_specs:
+      item.ai_research_key_specs && typeof item.ai_research_key_specs === "object"
+        ? (item.ai_research_key_specs as Record<string, string>)
+        : {},
+    ai_research_last_checked: item.ai_research_last_checked?.toISOString() ?? null,
     images: item.item_images.map((img) => ({
       id: img.id,
       image_url: img.image_url,

@@ -129,6 +129,13 @@ model items {
   sold_date                                      DateTime?     @db.Date
   listing_url                                    String?
   medusa_product_id                              String?       @db.VarChar(255)
+  ai_research_summary                            String?
+  ai_research_price_low                          Decimal?      @db.Decimal(12, 2)
+  ai_research_price_high                         Decimal?      @db.Decimal(12, 2)
+  ai_research_price_currency                     String?       @db.VarChar(10)
+  ai_research_sources                            Json?         @default("[]")
+  ai_research_key_specs                          Json?         @default("{}")
+  ai_research_last_checked                       DateTime?     @db.Timestamptz(6)
   action_logs                                    action_logs[]
   item_images                                    item_images[]
   users                                          users?        @relation(fields: [assigned_to_user_id], references: [id], onUpdate: NoAction)

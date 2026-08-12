@@ -147,6 +147,7 @@ services:
       OPENROUTER_SITE_URL: http://localhost:${VOICESTORAGE_APP_PORT:-3100}
       OPENROUTER_APP_NAME: VoiceStorage
       INVSTORAGE_API_KEY: ${INVSTORAGE_API_KEY:-}
+      SERPAPI_KEY: ${SERPAPI_KEY:-}
     volumes:
       - ./photo-inbox:/data/photo-inbox
     depends_on:

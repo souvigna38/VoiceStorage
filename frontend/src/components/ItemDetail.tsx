@@ -27,6 +27,7 @@ import ItemPricing from "./item-detail/ItemPricing";
 import ItemLogistics from "./item-detail/ItemLogistics";
 import ItemHardwareSpecs from "./item-detail/ItemHardwareSpecs";
 import ItemAIInsights from "./item-detail/ItemAIInsights";
+import ItemResearch from "./item-detail/ItemResearch";
 import ItemActivityLog from "./item-detail/ItemActivityLog";
 
 interface ItemDetailProps {
@@ -327,6 +328,9 @@ export default function ItemDetail({ product, locations }: ItemDetailProps) {
             isPending={isPending}
             startTransition={startTransition}
           />
+
+          {/* ===== AI RESEARCH CARD ===== */}
+          <ItemResearch product={product} />
 
           {/* ===== SPECIFICATIONS TABLE ===== */}
           <div className="border-t border-gray-100 p-6 md:p-8">

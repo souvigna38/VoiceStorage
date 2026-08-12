@@ -57,6 +57,13 @@ export interface ActionLogEntry {
   action_date: string | null;
 }
 
+export interface ResearchSource {
+  title: string;
+  url: string;
+  source: string;
+  price: number | null;
+}
+
 export interface ProductDetail extends ProductItem {
   notes: string | null;
   warranty_months: number | null;
@@ -78,6 +85,13 @@ export interface ProductDetail extends ProductItem {
   msrp_last_checked: string | null;
   sold_date: string | null;
   listing_url: string | null;
+  ai_research_summary: string | null;
+  ai_research_price_low: number | null;
+  ai_research_price_high: number | null;
+  ai_research_price_currency: string | null;
+  ai_research_sources: ResearchSource[];
+  ai_research_key_specs: Record<string, string>;
+  ai_research_last_checked: string | null;
   images: {
     id: number;
     image_url: string;
