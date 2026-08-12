@@ -85,23 +85,9 @@
   },
 
   // ── Channels ──────────────────────────────────────────────────────────────
-  // Set up Telegram: Message @BotFather on Telegram → /newbot → get token
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "dmPolicy": "pairing",
-      "botToken": "YOUR_TELEGRAM_BOT_TOKEN",
-      "groupPolicy": "allowlist",
-      "streamMode": "partial"
-    }
-    // Uncomment to add Discord:
-    // "discord": {
-    //   "enabled": true,
-    //   "token": "YOUR_DISCORD_BOT_TOKEN",
-    //   "groupPolicy": "allowlist",
-    //   "dm": { "enabled": true, "policy": "allowlist" }
-    // }
-  },
+  // Telegram is disabled. Compose startup strips any telegram channel/plugin
+  // because openclaw doctor auto-enables Telegram when that block is present.
+  "channels": {},
 
   // ── Gateway ───────────────────────────────────────────────────────────────
   "gateway": {
@@ -129,10 +115,5 @@
   },
 
   // ── Channel → Agent Binding ───────────────────────────────────────────────
-  "bindings": [
-    {
-      "agentId": "main",
-      "match": { "channel": "telegram" }
-    }
-  ]
+  "bindings": []
 }

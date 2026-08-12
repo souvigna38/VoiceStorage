@@ -1,12 +1,14 @@
 "use server";
 
 import { hybridSearch } from "@/actions/inventory";
+import { conversationalSearch } from "@/actions/chat";
 import type { HybridSearchResults } from "@/lib/types";
 
 // =============================================================================
 // VOICE SEARCH — The "Star Trek" Voice Loop
 // =============================================================================
-// Flow: Audio blob → Whisper (transcribe) → CLIP + Prisma (hybrid search)
+// Flow: Audio blob → Whisper (transcribe) → OpenRouter conversational answer
+//       (allowlisted read-only tools) + CLIP/Prisma hybrid search for cards.
 // =============================================================================
 
 const CLIP_SERVICE_URL = process.env.CLIP_SERVICE_URL || "http://localhost:8100";
@@ -16,6 +18,8 @@ export interface VoiceSearchResult {
   language: string;
   transcriptionTime: number;
   results: HybridSearchResults;
+  /** Natural-language answer from the conversational layer, if available. */
+  answer?: string;
 }
 
 /**
@@ -63,14 +67,24 @@ export async function processVoiceCommand(
   const cleaned = cleanVoiceCommand(transcript);
   console.log(`[Voice] Cleaned query: "${cleaned}"`);
 
-  // ─── Step 3: Hybrid search (text + vector) ─────────────────────────
-  const results = await hybridSearch(cleaned, 10);
+  // ─── Step 3: Conversational answer + hybrid search (parallel) ───────
+  // The conversational layer uses the full transcript for context; the hybrid
+  // search uses the cleaned keywords to power the result cards. Both run in
+  // parallel so the UI has an answer and cards even if one path degrades.
+  const [results, conversation] = await Promise.all([
+    hybridSearch(cleaned, 10),
+    conversationalSearch(transcript).catch((err) => {
+      console.error("[Voice] Conversational layer failed:", err);
+      return null;
+    }),
+  ]);
 
   return {
     transcript,
     language: transcription.language || "en",
     transcriptionTime: transcription.duration || 0,
     results,
+    answer: conversation?.answer,
   };
 }
 

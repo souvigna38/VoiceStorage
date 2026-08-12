@@ -40,3 +40,27 @@ export function requireAuth(request: Request): NextResponse | null {
 
 /** The default admin user ID used for audit logs. */
 export const ADMIN_USER_ID = 1;
+
+/**
+ * Server Action auth guard.
+ *
+ * API-route auth (`requireAuth`) works on a `Request`, but Server Actions have
+ * no request object, so they read the `invstorage_session` cookie instead.
+ *
+ * If INVSTORAGE_API_KEY is not set, all calls are allowed (dev/local mode),
+ * matching `requireAuth`'s behavior. Returns true when authorized.
+ */
+export async function isActionAuthorized(): Promise<boolean> {
+  if (!API_KEY) return true;
+  // Imported lazily so this module stays usable from non-request contexts.
+  const { cookies } = await import("next/headers");
+  const store = await cookies();
+  return store.get("invstorage_session")?.value === API_KEY;
+}
+
+/** Throwing variant for Server Actions. */
+export async function assertActionAuthorized(): Promise<void> {
+  if (!(await isActionAuthorized())) {
+    throw new Error("Unauthorized — valid session required");
+  }
+}

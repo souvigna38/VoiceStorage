@@ -142,9 +142,11 @@ services:
       VAULT_DATABASE_URL: postgresql://${VAULT_USER:-vault}:${VAULT_PASSWORD:-change-vault-password}@vault-db:5432/vault_spm1
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_VISION_MODEL: ${OPENROUTER_VISION_MODEL:-google/gemini-2.5-flash}
+      OPENROUTER_CHAT_MODEL: ${OPENROUTER_CHAT_MODEL:-google/gemini-2.5-flash}
       OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
       OPENROUTER_SITE_URL: http://localhost:${VOICESTORAGE_APP_PORT:-3100}
       OPENROUTER_APP_NAME: VoiceStorage
+      INVSTORAGE_API_KEY: ${INVSTORAGE_API_KEY:-}
     volumes:
       - ./photo-inbox:/data/photo-inbox
     depends_on:

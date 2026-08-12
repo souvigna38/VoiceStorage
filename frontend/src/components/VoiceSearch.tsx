@@ -135,6 +135,7 @@ export default function VoiceSearch() {
       const voiceResult = await processVoiceCommand(formData);
       setResult(voiceResult);
       setState("results");
+      speak(voiceResult.answer);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Voice search failed";
       setError(msg);
@@ -142,10 +143,27 @@ export default function VoiceSearch() {
     }
   };
 
+  // Read the assistant's answer aloud (browser TTS — free, on-device).
+  const speak = (text?: string) => {
+    if (!text) return;
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    try {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1.05;
+      window.speechSynthesis.speak(utterance);
+    } catch {
+      // TTS is best-effort; ignore failures.
+    }
+  };
+
   // ---------------------------------------------------------------------------
   // Close overlay
   // ---------------------------------------------------------------------------
   const closeOverlay = () => {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
     setIsOverlayOpen(false);
     setState("idle");
     setResult(null);
@@ -331,6 +349,16 @@ export default function VoiceSearch() {
                   )}
                 </div>
               </div>
+
+              {/* Assistant answer (conversational layer) */}
+              {result.answer && (
+                <div className="px-6 pt-4">
+                  <div className="flex items-start gap-3 rounded-xl bg-[#febd69]/10 border border-[#febd69]/30 px-4 py-3">
+                    <SignalIcon className="h-5 w-5 text-[#febd69] flex-shrink-0 mt-0.5" />
+                    <p className="text-white text-base leading-relaxed">{result.answer}</p>
+                  </div>
+                </div>
+              )}
 
               {/* Results list */}
               <div className="flex-1 overflow-y-auto px-6 py-4">
